@@ -395,6 +395,11 @@ class collabora_fs extends base_filesystem {
 
         $file  = reset($files);
         if (!$file) {
+            // Try to rebuild the missing initial file, so a broken activity does not break the whole course.
+            $cm = get_coursemodule_from_id('collabora', $this->context->instanceid);
+            if ($cm && \mod_collabora\util::fix_legacy_initfiles($this->collaborarec, $cm)) {
+                return $this->get_initial_file();
+            }
             throw new \moodle_exception('initialfilemissing', 'mod_collabora');
         }
 
