@@ -94,9 +94,8 @@ class restore_collabora_activity_structure_step extends restore_activity_structu
         $this->add_related_files('mod_collabora', collabora_fs::FILEAREA_INITIAL, null);
         $this->add_related_files('mod_collabora', collabora_fs::FILEAREA_GROUP, 'collabora_group');
 
-        // Add a missing initial file right now. Old backups might come without it.
-        // This must not wait for after_restore(). Until then Moodle rebuilds the course cache
-        // which needs the initial file and would break the restore.
+        // Old backups might come without the initial file. Create it here, before the course cache is rebuilt,
+        // so the restore does not depend on collabora_fs rebuilding it as a side effect of the cache.
         $this->fix_missing_initial_file();
     }
 
@@ -105,7 +104,7 @@ class restore_collabora_activity_structure_step extends restore_activity_structu
      *
      * @return void
      */
-    protected function fix_missing_initial_file() {
+    protected function fix_missing_initial_file(): void {
         global $DB;
 
         $collabora = $DB->get_record('collabora', ['id' => $this->task->get_activityid()], '*', MUST_EXIST);
@@ -125,9 +124,6 @@ class restore_collabora_activity_structure_step extends restore_activity_structu
 
         // Fix the file stamps.
         $this->fix_file_timestamps($cm);
-
-        // Safety net: The initial file is normally created in after_execute() already.
-        \mod_collabora\util::fix_legacy_initfiles($collabora, $cm);
     }
 
     /**

@@ -380,26 +380,16 @@ class collabora_fs extends base_filesystem {
      * @return \stored_file
      */
     private function get_initial_file() {
-        $fs    = get_file_storage();
-        $files = $fs->get_area_files(
-            $this->context->id, // Param contextid.
-            'mod_collabora', // Param component.
-            self::FILEAREA_INITIAL, // Param filearea.
-            false, // Param itemid.
-            'filename', // Param sort.
-            false, // Param includedirs.
-            0, // Param updatedsince.
-            0, // Param limitfrom.
-            1 // Param limitnum.
-        );
-
-        $file  = reset($files);
+        $file = \mod_collabora\util::get_initial_file($this->context);
         if (!$file) {
             // Try to rebuild the missing initial file, so a broken activity does not break the whole course.
             $cm = get_coursemodule_from_id('collabora', $this->context->instanceid);
-            if ($cm && \mod_collabora\util::fix_legacy_initfiles($this->collaborarec, $cm)) {
-                return $this->get_initial_file();
+            if ($cm) {
+                \mod_collabora\util::fix_legacy_initfiles($this->collaborarec, $cm);
+                $file = \mod_collabora\util::get_initial_file($this->context);
             }
+        }
+        if (!$file) {
             throw new \moodle_exception('initialfilemissing', 'mod_collabora');
         }
 

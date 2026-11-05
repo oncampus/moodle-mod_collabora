@@ -237,9 +237,15 @@ class util {
         }
 
         // The last check is for the system templates.
-        // It uses the pathnamehash from the template file.
+        // It uses the pathnamehash from the template file and accepts only files from the template area.
         $file = $fs->get_file_by_hash($collabora->format);
-        if (empty($file)) {
+        if (
+            empty($file)
+            || $file->get_contextid() != \context_system::instance()->id
+            || $file->get_component() !== 'mod_collabora'
+            || $file->get_filearea() !== collabora_fs::FILEAREA_TEMPLATE
+            || $file->is_directory()
+        ) {
             throw new \moodle_exception('filenotfound', 'error');
         }
 
@@ -313,21 +319,16 @@ class util {
     }
 
     /**
-     * Fixes any legacy initial files for the Collabora Online activity.
+     * Makes sure the Collabora Online activity has an initial file.
      *
-     * This method ensures that the initial file for the Collabora Online activity is set up correctly.
-     * If no initial file is found, it will store a default initial file.
-     * It is called after the files of a restore were added and by the upgrade step for legacy activities.
-     * It is also used as a fallback if the initial file is missing when the document is opened.
-     *
-     * If the initial file can not be rebuilt from the activity settings (for example because it was uploaded
-     * and is lost or because a system template does not exist on this site), an empty placeholder file is stored.
+     * A missing initial file is rebuilt from the activity settings. If that is not possible (the file was
+     * uploaded, or the system template does not exist on this site), an empty placeholder file is stored.
      *
      * @param \stdClass $collabora The collabora record.
      * @param \stdClass $cm The course module object.
      * @return bool True if an initial file was created, false if there was already one.
      */
-    public static function fix_legacy_initfiles($collabora, $cm) {
+    public static function fix_legacy_initfiles($collabora, $cm): bool {
         $context = \context_module::instance($cm->id);
         if (static::has_initial_file($context)) {
             return false;
@@ -339,10 +340,13 @@ class util {
             try {
                 $stored = static::store_initial_file($collabora, $cm->id);
             } catch (\moodle_exception $e) {
-                $stored = false;
+                // Only a missing system template falls back to the placeholder.
+                if ($e->errorcode !== 'filenotfound') {
+                    throw $e;
+                }
             }
         }
-        if (!$stored || !static::has_initial_file($context)) {
+        if (!$stored) {
             static::store_placeholder_initial_file($collabora, $context);
         }
 
@@ -356,6 +360,16 @@ class util {
      * @return bool
      */
     public static function has_initial_file(\context_module $context): bool {
+        return !get_file_storage()->is_area_empty($context->id, 'mod_collabora', collabora_fs::FILEAREA_INITIAL);
+    }
+
+    /**
+     * Returns the initial file for the given module context.
+     *
+     * @param \context_module $context
+     * @return \stored_file|null Null if there is no initial file.
+     */
+    public static function get_initial_file(\context_module $context): ?\stored_file {
         $fs    = get_file_storage();
         $files = $fs->get_area_files(
             $context->id, // Param contextid.
@@ -369,14 +383,15 @@ class util {
             1 // Param limitnum.
         );
 
-        return !empty($files);
+        return reset($files) ?: null;
     }
 
     /**
      * Stores an empty placeholder as initial file.
      *
      * The file type follows the document of the activity, if there is already one.
-     * Otherwise an empty text document is used. The content of an existing document is never copied
+     * Otherwise an empty word document is used.
+     * The content of an existing document is never copied
      * because it may already contain the work of users.
      *
      * @param \stdClass $collabora The collabora record.
@@ -384,10 +399,24 @@ class util {
      * @return void
      */
     public static function store_placeholder_initial_file($collabora, \context_module $context): void {
-        global $CFG;
+        $fs        = get_file_storage();
+        $templates = static::get_legacy_templates();
 
-        $fs = get_file_storage();
-
+        // Map the extension of an existing document to an empty file of the same kind, null means an empty text file.
+        // The plugin ships only OOXML blank files. Drawings (odg) and unknown types get the word document.
+        $blankfiles = [
+            'docx' => $templates[static::FORMAT_WORDPROCESSOR],
+            'doc'  => $templates[static::FORMAT_WORDPROCESSOR],
+            'rtf'  => $templates[static::FORMAT_WORDPROCESSOR],
+            'odt'  => $templates[static::FORMAT_WORDPROCESSOR],
+            'xlsx' => $templates[static::FORMAT_SPREADSHEET],
+            'xls'  => $templates[static::FORMAT_SPREADSHEET],
+            'ods'  => $templates[static::FORMAT_SPREADSHEET],
+            'pptx' => $templates[static::FORMAT_PRESENTATION],
+            'ppt'  => $templates[static::FORMAT_PRESENTATION],
+            'odp'  => $templates[static::FORMAT_PRESENTATION],
+            'txt'  => null,
+        ];
         $ext   = 'docx';
         $files = $fs->get_area_files(
             $context->id, // Param contextid.
@@ -399,28 +428,27 @@ class util {
         );
         foreach ($files as $file) {
             $fileext = strtolower(pathinfo($file->get_filename(), PATHINFO_EXTENSION));
-            if (in_array($fileext, ['docx', 'xlsx', 'pptx'])) {
+            if (array_key_exists($fileext, $blankfiles)) {
                 $ext = $fileext;
                 break;
             }
         }
 
-        $blankfiles = [
-            'docx' => 'blankdocument.docx',
-            'xlsx' => 'blankspreadsheet.xlsx',
-            'pptx' => 'blankpresentation.pptx',
+        $blankfile = $blankfiles[$ext];
+        $filerec   = (object) [
+            'contextid' => $context->id,
+            'component' => 'mod_collabora',
+            'filearea'  => collabora_fs::FILEAREA_INITIAL,
+            'itemid'    => 0,
+            'filepath'  => '/',
+            'filename'  => clean_filename(format_string($collabora->name)) . '.'
+                . ($blankfile ? pathinfo($blankfile, PATHINFO_EXTENSION) : 'txt'),
         ];
-        $fs->create_file_from_pathname(
-            (object) [
-                'contextid' => $context->id,
-                'component' => 'mod_collabora',
-                'filearea'  => collabora_fs::FILEAREA_INITIAL,
-                'itemid'    => 0,
-                'filepath'  => '/',
-                'filename'  => clean_filename(format_string($collabora->name)) . '.' . $ext,
-            ],
-            $CFG->dirroot . '/mod/collabora/blankfiles/' . $blankfiles[$ext]
-        );
+        if ($blankfile) {
+            $fs->create_file_from_pathname($filerec, $blankfile);
+        } else {
+            $fs->create_file_from_string($filerec, '');
+        }
         debugging(
             "mod_collabora: The initial file of the activity {$collabora->id} was missing and replaced by an empty file.",
             DEBUG_NORMAL

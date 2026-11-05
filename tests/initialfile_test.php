@@ -25,6 +25,7 @@ use mod_collabora\api\collabora_fs;
  * after restoring a backup of an old plugin version which came without initial files.
  *
  * @package   mod_collabora
+ * @copyright 2026 oncampus GmbH
  * @license   http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 final class initialfile_test extends \advanced_testcase {
@@ -99,9 +100,70 @@ final class initialfile_test extends \advanced_testcase {
         $this->assertDebuggingCalled();
         $this->assertTrue(util::has_initial_file($context));
 
-        $files = get_file_storage()->get_area_files($context->id, 'mod_collabora', collabora_fs::FILEAREA_INITIAL, false, 'id', false);
+        $files = get_file_storage()->get_area_files(
+            $context->id,
+            'mod_collabora',
+            collabora_fs::FILEAREA_INITIAL,
+            false,
+            'id',
+            false
+        );
         $this->assertCount(1, $files);
         $this->assertSame('docx', pathinfo(reset($files)->get_filename(), PATHINFO_EXTENSION));
+    }
+
+    /**
+     * A system template missing on this site falls back to an empty placeholder.
+     *
+     * @covers \mod_collabora\util::fix_legacy_initfiles
+     * @return void
+     */
+    public function test_fix_stores_placeholder_for_missing_template(): void {
+        global $DB;
+
+        $collabora = $this->create_broken_activity('text');
+        $DB->set_field('collabora', 'format', sha1('/missing/template.docx'), ['id' => $collabora->id]);
+        $collabora = $DB->get_record('collabora', ['id' => $collabora->id]);
+        $cm        = get_coursemodule_from_instance('collabora', $collabora->id, 0, false, MUST_EXIST);
+        $context   = \context_module::instance($cm->id);
+
+        $this->assertTrue(util::fix_legacy_initfiles($collabora, $cm));
+        $this->assertDebuggingCalled();
+        $this->assertSame('docx', pathinfo(util::get_initial_file($context)->get_filename(), PATHINFO_EXTENSION));
+    }
+
+    /**
+     * The placeholder keeps the type of the uploaded document.
+     *
+     * @covers \mod_collabora\util::store_placeholder_initial_file
+     * @return void
+     */
+    public function test_placeholder_follows_document_type(): void {
+        $cases = ['table.ods' => 'xlsx', 'table.xls' => 'xlsx', 'slides.ppt' => 'pptx', 'notes.txt' => 'txt'];
+        foreach ($cases as $groupfile => $expected) {
+            $collabora         = $this->create_broken_activity('text');
+            $collabora->format = util::FORMAT_UPLOAD;
+            $context           = \context_module::instance($collabora->cmid);
+            get_file_storage()->create_file_from_string(
+                (object) [
+                    'contextid' => $context->id,
+                    'component' => 'mod_collabora',
+                    'filearea'  => collabora_fs::FILEAREA_GROUP,
+                    'itemid'    => 0,
+                    'filepath'  => '/',
+                    'filename'  => $groupfile,
+                ],
+                'content'
+            );
+
+            util::store_placeholder_initial_file($collabora, $context);
+            $this->assertDebuggingCalled();
+            $this->assertSame(
+                $expected,
+                pathinfo(util::get_initial_file($context)->get_filename(), PATHINFO_EXTENSION),
+                $groupfile
+            );
+        }
     }
 
     /**
@@ -116,9 +178,8 @@ final class initialfile_test extends \advanced_testcase {
         $collabora = $this->create_broken_activity('text');
         $context   = \context_module::instance($collabora->cmid);
 
-        $collaborafs = new collabora_fs($collabora, $context, 0, $USER->id);
+        new collabora_fs($collabora, $context, 0, $USER->id);
 
-        $this->assertNotEmpty($collaborafs);
         $this->assertTrue(util::has_initial_file($context));
     }
 
@@ -188,5 +249,52 @@ final class initialfile_test extends \advanced_testcase {
         $this->assertTrue(util::has_initial_file(\context_module::instance($cm->id)));
         // The course cache can be built.
         get_fast_modinfo($newcourseid);
+    }
+
+    /**
+     * The initial file is copied from a system template in the template area.
+     *
+     * @covers \mod_collabora\util::store_initial_file
+     * @return void
+     */
+    public function test_store_initial_file_uses_template_area(): void {
+        $fs        = get_file_storage();
+        $collabora = $this->create_broken_activity('text');
+        $context   = \context_module::instance($collabora->cmid);
+
+        $other = $fs->create_file_from_string(
+            (object) [
+                'contextid' => \context_course::instance($this->course->id)->id,
+                'component' => 'course',
+                'filearea'  => 'overviewfiles',
+                'itemid'    => 0,
+                'filepath'  => '/',
+                'filename'  => 'other.docx',
+            ],
+            'other content'
+        );
+        $collabora->format = $other->get_pathnamehash();
+        try {
+            util::store_initial_file($collabora, $collabora->cmid);
+            $this->fail('Expected filenotfound for a file outside the template area.');
+        } catch (\moodle_exception $e) {
+            $this->assertSame('filenotfound', $e->errorcode);
+        }
+        $this->assertFalse(util::has_initial_file($context));
+
+        $template = $fs->create_file_from_string(
+            (object) [
+                'contextid' => \context_system::instance()->id,
+                'component' => 'mod_collabora',
+                'filearea'  => collabora_fs::FILEAREA_TEMPLATE,
+                'itemid'    => 0,
+                'filepath'  => '/',
+                'filename'  => 'template.docx',
+            ],
+            'template content'
+        );
+        $collabora->format = $template->get_pathnamehash();
+        $this->assertTrue(util::store_initial_file($collabora, $collabora->cmid));
+        $this->assertSame('template content', util::get_initial_file($context)->get_content());
     }
 }
