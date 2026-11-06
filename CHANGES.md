@@ -4,6 +4,11 @@ moodle-mod_collabora
 Changes
 -------
 
+### Unreleased
+* fix `initialfilemissing` after restoring backups without initial files (#51, #53): the initial file is now created
+  while restoring the activity, not after the whole restore. A missing initial file is rebuilt from the settings,
+  or replaced by an empty file of the same type for uploads and missing templates, instead of breaking the course.
+
 ### v5.0.3
 * fix HTML iframe tag to allow clipboard read / write in Chrome (#55, #57)
 * use conversion API to convert documents to PDF (currently only used in assignsubmission_collabora)
